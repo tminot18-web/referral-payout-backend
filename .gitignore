@@ -16,3 +16,13 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+.env
+**/.env
+.env.*
+node_modules/
+.dist/
+dist/
+__pycache__/
+*.sqlite
+*.db
+
