@@ -1,38 +1,62 @@
-export const API_BASE =
-  import.meta.env.VITE_API_BASE?.replace(/\/+$/, '') ||
-  'https://referral-payout-backend.onrender.com';
+// src/lib/api.js
 
-async function request(path, opts = {}) {
+const API_BASE =
+  (typeof import.meta !== "undefined" &&
+    import.meta.env &&
+    import.meta.env.VITE_API_BASE) ||
+  process.env.VITE_API_BASE || // for some CI tools
+  "http://localhost:8000";
+
+async function req(path, { method = "GET", headers = {}, body, credentials = "include" } = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
-    method: 'GET',
-    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
-    credentials: 'include',
-    ...opts,
+    method,
+    headers: { "Content-Type": "application/json", ...headers },
+    body: body ? JSON.stringify(body) : undefined,
+    credentials,
   });
-  const ct = res.headers.get('content-type') || '';
-  const body = ct.includes('application/json') ? await res.json() : await res.text();
+  // Allow 204
+  if (res.status === 204) return null;
+  const text = await res.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    throw new Error(`Invalid JSON from ${path}: ${text?.slice(0, 200)}`);
+  }
   if (!res.ok) {
-    const detail = (body && body.detail) ? body.detail : (typeof body === 'string' ? body : 'Request failed');
-    const err = new Error(detail);
-    err.status = res.status; err.response = body;
+    const msg = (data && (data.detail || data.error)) || `HTTP ${res.status}`;
+    const err = new Error(msg);
+    err.status = res.status;
+    err.data = data;
     throw err;
   }
-  return body;
+  return data;
 }
 
-export const api = {
-  login: (email, password) => request('/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
-  logout: () => request('/logout', { method: 'POST' }),
+export const API = {
+  // Auth
+  login: (payload) => req("/login", { method: "POST", body: payload }),
+  logout: () => req("/logout", { method: "POST" }),
+  session: () => req("/session"),
 
-  users: (q, statusFilter) =>
-    request(`/users${q || statusFilter ? `?${new URLSearchParams({ ...(q?{q}:{}) , ...(statusFilter?{status_filter:statusFilter}:{}) }).toString()}` : ''}`),
+  // Users
+  listUsers: (q) => req(`/users${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+  getUser: (user_id) => req(`/users/${encodeURIComponent(user_id)}`),
+  createUser: (payload) => req("/users", { method: "POST", body: payload }),
+  deleteUser: (user_id) => req(`/users/${encodeURIComponent(user_id)}`, { method: "DELETE" }),
 
-  createUser: (u) => request('/users', { method: 'POST', body: JSON.stringify(u) }),
-  delUser: (user_id) => request(`/users/${encodeURIComponent(user_id)}`, { method: 'DELETE' }),
-  updateUserStatus: (user_id, status) =>
-    request(`/users/${encodeURIComponent(user_id)}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+  // Pending/approve/deny
+  listPending: () => req("/users/pending"),
+  approveUser: (user_id) => req(`/users/${encodeURIComponent(user_id)}/approve`, { method: "POST" }),
+  denyUser: (user_id) => req(`/users/${encodeURIComponent(user_id)}/deny`, { method: "POST" }),
 
-  pay: (payload) => request('/pay', { method: 'POST', body: JSON.stringify(payload) }),
-  txByUser: (user_id) => request(`/tx/user/${encodeURIComponent(user_id)}`),
+  // Tx & Pay
+  listTxByUser: (user_id) => req(`/tx/user/${encodeURIComponent(user_id)}`),
+  createTx: (payload) => req("/tx", { method: "POST", body: payload }),
+  pay: (payload) => req("/pay", { method: "POST", body: payload }),
 };
+
+// Optional convenience exports
+export default API;
+export { API_BASE };
 
