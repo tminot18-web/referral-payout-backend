@@ -1,7 +1,8 @@
-# backend/schemas.py
-from pydantic import BaseModel, EmailStr
-from typing import Optional
+from pydantic import BaseModel, EmailStr, field_validator
+from typing import Optional, Literal
 from datetime import datetime
+
+UserStatus = Literal["pending", "approved", "denied"]
 
 # ---------- Users ----------
 class UserCreate(BaseModel):
@@ -19,9 +20,13 @@ class UserOut(BaseModel):
     wallet: str
     network: str
     total_paid: float
+    status: UserStatus
 
     class Config:
-        from_attributes = True  # pydantic v2: replaces orm_mode
+        from_attributes = True
+
+class UserStatusUpdate(BaseModel):
+    status: UserStatus
 
 # ---------- Transactions ----------
 class PayIn(BaseModel):
@@ -30,7 +35,6 @@ class PayIn(BaseModel):
     network: str          # "ERC20" | "TRC20"
     tx_hash: str = ""     # optional at time of call
     status: str = "success"  # "success" | "failed" | "pending"
-
 
 class TxCreate(BaseModel):
     user_id: str
