@@ -1,9 +1,10 @@
+
 # main.py
 from __future__ import annotations
 
-from pathlib import Path
 import os
 import uuid
+from pathlib import Path
 from typing import List, Optional
 
 from dotenv import load_dotenv
@@ -13,20 +14,20 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+# Local app imports
 from db import Base, engine, get_db
 from models import User, TxLog
 from schemas import (
     UserCreate, UserOut,
     TxCreate, TxOut,
-    LoginIn, PayIn
+    LoginIn, PayIn,
 )
 from auth import verify_admin, create_token, require_auth
 
-# ---------------------------------------------------------------------------
-# Environment & app setup
-# ---------------------------------------------------------------------------
 
-# Load .env that sits next to this file
+# -----------------------------------------------------------------------------
+# Environment + App
+# -----------------------------------------------------------------------------
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
 
 Base.metadata.create_all(bind=engine)
@@ -39,59 +40,102 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 
-# Detect prod hosting (Render/Vercel/etc.) to decide cookie flags
+# Are we on a public host? (Render, Vercel, etc.)
 IS_PROD = any(
     os.getenv(k) for k in ("RENDER", "VERCEL", "RAILWAY_STATIC_URL", "FLY_IO")
 ) or os.getenv("ENV", "").lower() in {"prod", "production"}
 
-# Build explicit CORS origin list (we use credentials)
-origins = {"http://localhost:5173", "http://localhost:3000"}
-frontend_env = os.getenv("FRONTEND_ORIGIN")
-if frontend_env and frontend_env != "*":
-    origins.add(frontend_env)
+
+# -----------------------------------------------------------------------------
+# CORS: normalize env origins + allow *.netlify.app
+# -----------------------------------------------------------------------------
+def _clean_origin(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+    return url.strip().rstrip("/")
+
+allowed_origins = set()
+
+# Admin UI (Netlify) origin
+frontend_origin = _clean_origin(os.getenv("FRONTEND_ORIGIN"))
+if frontend_origin and frontend_origin != "*":
+    allowed_origins.add(frontend_origin)
+
+# Public form (Netlify) origin
+public_form_origin = _clean_origin(os.getenv("PUBLIC_FORM_ORIGIN"))
+if public_form_origin and public_form_origin != "*":
+    allowed_origins.add(public_form_origin)
+
+# Optional: comma-separated extra origins (e.g., branch/preview URLs, custom domains)
+extra = os.getenv("EXTRA_ALLOWED_ORIGINS", "")
+if extra:
+    for part in extra.split(","):
+        val = _clean_origin(part)
+        if val:
+            allowed_origins.add(val)
+
+# Allow any *.netlify.app (public/preview form deployments)
+NETLIFY_REGEX = r"^https://[A-Za-z0-9-]+\.netlify\.app/?$"
+
+print("=== CORS config ===")
+print("allow_origins:", allowed_origins if allowed_origins else "(none)")
+print("allow_origin_regex:", NETLIFY_REGEX)
+print("===================")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=list(origins),
-    allow_credentials=True,          # required for cookie auth
+    allow_origins=list(allowed_origins),   # exact matches (env)
+    allow_origin_regex=NETLIFY_REGEX,      # wildcard for *.netlify.app
+    allow_credentials=True,                # needed for admin cookie auth
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Helper: cookie parameters based on environment
+
+# -----------------------------------------------------------------------------
+# Cookies
+# -----------------------------------------------------------------------------
 def cookie_kwargs() -> dict:
     """
-    Return kwargs for Response.set_cookie that are correct for the environment.
+    Return secure cookie settings depending on environment.
     - Local dev: SameSite=Lax, Secure=False
-    - Prod (HTTPS): SameSite=None, Secure=True
+    - Prod (HTTPS hosts): SameSite=None, Secure=True
     """
     if IS_PROD:
         return dict(httponly=True, samesite="none", secure=True, max_age=60 * 60 * 24 * 7)
     else:
         return dict(httponly=True, samesite="lax", secure=False, max_age=60 * 60 * 24 * 7)
 
-# ---------------------------------------------------------------------------
-# Root & health
-# ---------------------------------------------------------------------------
 
+# -----------------------------------------------------------------------------
+# Root & Health
+# -----------------------------------------------------------------------------
 @app.get("/", include_in_schema=False)
 def index():
-    """Redirect base URL to Swagger docs so the live URL is friendly."""
     return RedirectResponse(url="/docs")
+
 
 @app.get("/healthz", include_in_schema=False)
 def healthz():
-    return {"ok": True}
+    # Light DB touch to ensure DB is reachable (optional)
+    try:
+        with next(get_db()) as db:
+            db.execute("SELECT 1")
+    except Exception:
+        # If DB probe fails, still return something to indicate liveness.
+        return {"ok": True, "db": "unavailable"}
+    return {"ok": True, "db": "ok"}
 
-# Optional: quick probe for the UI to learn auth status
+
+# Quick probe for the UI to learn auth state
 @app.get("/session")
-def session_probe(dep: None = Depends(require_auth)):
+def session_probe(_=Depends(require_auth)):
     return {"authenticated": True}
 
-# ---------------------------------------------------------------------------
-# Auth
-# ---------------------------------------------------------------------------
 
+# -----------------------------------------------------------------------------
+# Auth
+# -----------------------------------------------------------------------------
 @app.post("/login", status_code=status.HTTP_200_OK)
 def login(payload: LoginIn, resp: Response):
     if not verify_admin(payload.email, payload.password):
@@ -100,20 +144,21 @@ def login(payload: LoginIn, resp: Response):
     resp.set_cookie(key="session", value=token, **cookie_kwargs())
     return {"ok": True}
 
+
 @app.post("/logout", status_code=status.HTTP_200_OK)
 def logout(resp: Response):
-    # Name and (for safety) same attributes as set_cookie, so the browser deletes the right one
-    kwargs = cookie_kwargs()
-    resp.delete_cookie(key="session", httponly=True, samesite=kwargs["samesite"])
+    # Delete cookie with same attributes it was set with
+    kw = cookie_kwargs()
+    resp.delete_cookie(key="session", httponly=True, samesite=kw["samesite"])
     return {"ok": True}
 
-# ---------------------------------------------------------------------------
-# Users
-# ---------------------------------------------------------------------------
 
+# -----------------------------------------------------------------------------
+# Users (ADMIN)
+# -----------------------------------------------------------------------------
 @app.post("/users", response_model=UserOut, dependencies=[Depends(require_auth)])
 def create_user(u: UserCreate, db: Session = Depends(get_db)):
-    # Prevent duplicates on user_id or email
+    # prevent duplicates on user_id or email
     exists = db.query(User).filter(
         or_(User.user_id == u.user_id, User.email == u.email)
     ).first()
@@ -132,6 +177,7 @@ def create_user(u: UserCreate, db: Session = Depends(get_db)):
     db.refresh(user)
     return user
 
+
 @app.get("/users", response_model=List[UserOut], dependencies=[Depends(require_auth)])
 def list_users(db: Session = Depends(get_db), q: Optional[str] = None):
     query = db.query(User)
@@ -145,12 +191,14 @@ def list_users(db: Session = Depends(get_db), q: Optional[str] = None):
         ))
     return query.order_by(User.id.desc()).all()
 
+
 @app.get("/users/{user_id}", response_model=UserOut, dependencies=[Depends(require_auth)])
 def get_user(user_id: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="Not found")
     return user
+
 
 @app.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_auth)])
 def delete_user(user_id: str, db: Session = Depends(get_db)):
@@ -161,10 +209,44 @@ def delete_user(user_id: str, db: Session = Depends(get_db)):
     db.commit()
     return
 
-# ---------------------------------------------------------------------------
-# Tx logs
-# ---------------------------------------------------------------------------
 
+# -----------------------------------------------------------------------------
+# Public self-add endpoint (NO auth)
+# -----------------------------------------------------------------------------
+@app.post("/users/public", status_code=status.HTTP_201_CREATED)
+def public_self_add(u: UserCreate, db: Session = Depends(get_db)):
+    """
+    For the Netlify-hosted public form. Adds a user record pending admin review.
+    The admin UI can delete or keep this entry.
+    """
+    # Basic validations
+    if not u.user_id or not u.email or not u.wallet or not u.network:
+        raise HTTPException(status_code=400, detail="Missing required fields")
+
+    # Avoid exact duplicates on user_id/email
+    exists = db.query(User).filter(
+        or_(User.user_id == u.user_id, User.email == u.email)
+    ).first()
+    if exists:
+        # Return 200 to make the form UX nice (idempotency feel)
+        return {"ok": True, "message": "Already on file"}
+
+    user = User(
+        user_id=u.user_id.strip(),
+        nick=(u.nick or "").strip(),
+        email=u.email.strip(),
+        wallet=u.wallet.strip(),
+        network=u.network.strip(),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return {"ok": True, "id": user.id}
+
+
+# -----------------------------------------------------------------------------
+# Tx logs (ADMIN)
+# -----------------------------------------------------------------------------
 @app.post("/tx", response_model=TxOut, dependencies=[Depends(require_auth)])
 def create_tx(t: TxCreate, db: Session = Depends(get_db)):
     log = TxLog(**t.dict())
@@ -180,14 +262,15 @@ def create_tx(t: TxCreate, db: Session = Depends(get_db)):
     db.refresh(log)
     return log
 
+
 @app.get("/tx/user/{user_id}", response_model=List[TxOut], dependencies=[Depends(require_auth)])
 def tx_by_user(user_id: str, db: Session = Depends(get_db)):
     return db.query(TxLog).filter(TxLog.user_id == user_id).order_by(TxLog.id.desc()).all()
 
-# ---------------------------------------------------------------------------
-# Pay (one-click payout log)
-# ---------------------------------------------------------------------------
 
+# -----------------------------------------------------------------------------
+# Pay (ADMIN) – one-click payout log
+# -----------------------------------------------------------------------------
 @app.post("/pay", dependencies=[Depends(require_auth)])
 def pay(p: PayIn, db: Session = Depends(get_db)):
     # ensure user exists
