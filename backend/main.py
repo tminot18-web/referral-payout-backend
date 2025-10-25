@@ -1,4 +1,5 @@
 
+# main.py
 from __future__ import annotations
 
 import os
@@ -7,88 +8,91 @@ from pathlib import Path
 from typing import List, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, HTTPException, Response, status, Request
+from fastapi import FastAPI, Depends, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-from sqlalchemy import or_, text
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, or_
+from sqlalchemy.sql import func
 from sqlalchemy.orm import Session
 
+# Local modules
 from db import Base, engine, get_db
-from models import User, TxLog
+from models import User, TxLog  # existing models file is kept as-is
 from schemas import (
-    UserCreate, UserOut, UserStatusUpdate,
+    UserCreate, UserOut,
     TxCreate, TxOut,
-    LoginIn, PayIn
+    LoginIn, PayIn,
 )
 from auth import verify_admin, create_token, require_auth
 
-# -----------------------------------------------------------------------------
-# Env & app setup
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Environment & app setup
+# ---------------------------------------------------------------------------
+
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
 
-# --- tiny auto-migration for status column (SQLite safe) ---
-with engine.connect() as conn:
-    cols = [r[1] for r in conn.execute(text("PRAGMA table_info(users)")).fetchall()]
-    if "status" not in cols:
-        conn.execute(text("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'approved'"))
-        conn.commit()
+# --- Define a PendingUser model here so the table always exists -------------
+# (Safe even if you already added it in models.py; SQLAlchemy will reconcile.)
+class PendingUser(Base):
+    __tablename__ = "pending_users"
 
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, unique=True, index=True)     # u_123 etc
+    nick = Column(String)
+    email = Column(String, index=True)
+    wallet = Column(String, index=True)                   # 0x... or T...
+    network = Column(String)                              # ERC20 | TRC20
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+# Create all tables (users, txlogs, pending_users)
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="Referral Payout API",
-    version="0.3.0",
+    version="0.2.0",
     docs_url="/docs",
     redoc_url=None,
     openapi_url="/openapi.json",
 )
 
-IS_PROD = any(os.getenv(k) for k in ("RENDER","VERCEL","RAILWAY_STATIC_URL","FLY_IO")) or os.getenv("ENV","").lower() in {"prod","production"}
+# Determine prod to set cookie flags
+IS_PROD = any(
+    os.getenv(k) for k in ("RENDER", "VERCEL", "RAILWAY_STATIC_URL", "FLY_IO")
+) or os.getenv("ENV", "").lower() in {"prod", "production"}
 
-# -----------------------------------------------------------------------------
-# CORS
-# -----------------------------------------------------------------------------
-def _clean_origin(url: str | None) -> str | None:
-    if not url: return None
-    return url.strip().rstrip("/")
+# Build CORS origins
+origins = {"http://localhost:5173", "http://localhost:3000"}
+frontend_env = os.getenv("FRONTEND_ORIGIN")
+if frontend_env and frontend_env != "*":
+    origins.add(frontend_env)
 
-allowed_origins = set()
-fe = _clean_origin(os.getenv("FRONTEND_ORIGIN"))
-pf = _clean_origin(os.getenv("PUBLIC_FORM_ORIGIN"))
-extra = os.getenv("EXTRA_ALLOWED_ORIGINS","")
+public_form_origin = os.getenv("PUBLIC_FORM_ORIGIN")
+if public_form_origin and public_form_origin != "*":
+    origins.add(public_form_origin)
 
-if fe and fe != "*": allowed_origins.add(fe)
-if pf and pf != "*": allowed_origins.add(pf)
-if extra:
-    for part in extra.split(","):
-        val = _clean_origin(part)
-        if val: allowed_origins.add(val)
-
-NETLIFY_REGEX = r"^https://[A-Za-z0-9-]+\.netlify\.app/?$"
-
-print("=== CORS config ===")
-print("allow_origins:", allowed_origins if allowed_origins else "(none)")
-print("allow_origin_regex:", NETLIFY_REGEX)
-print("===================")
+# Allow any *.netlify.app (handy for Netlify “drag-and-drop” or renamed sites)
+NETLIFY_REGEX = r"^https://[a-z0-9-]+\.netlify\.app/?$"
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=list(allowed_origins),
+    allow_origins=list(origins),
     allow_origin_regex=NETLIFY_REGEX,
-    allow_credentials=True,
+    allow_credentials=True,        # cookie sessions
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 def cookie_kwargs() -> dict:
+    """Cookie attributes tuned for local vs prod."""
     if IS_PROD:
-        return dict(httponly=True, samesite="none", secure=True, max_age=60*60*24*7)
-    return dict(httponly=True, samesite="lax", secure=False, max_age=60*60*24*7)
+        return dict(httponly=True, samesite="none", secure=True, max_age=60 * 60 * 24 * 7)
+    else:
+        return dict(httponly=True, samesite="lax", secure=False, max_age=60 * 60 * 24 * 7)
 
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Root & health
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+
 @app.get("/", include_in_schema=False)
 def index():
     return RedirectResponse(url="/docs")
@@ -101,9 +105,10 @@ def healthz():
 def session_probe(dep: None = Depends(require_auth)):
     return {"authenticated": True}
 
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Auth
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+
 @app.post("/login", status_code=status.HTTP_200_OK)
 def login(payload: LoginIn, resp: Response):
     if not verify_admin(payload.email, payload.password):
@@ -114,30 +119,38 @@ def login(payload: LoginIn, resp: Response):
 
 @app.post("/logout", status_code=status.HTTP_200_OK)
 def logout(resp: Response):
+    # must match attributes used when setting the cookie
     kw = cookie_kwargs()
     resp.delete_cookie(key="session", httponly=True, samesite=kw["samesite"])
     return {"ok": True}
 
-# -----------------------------------------------------------------------------
-# Users (ADMIN)
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Users
+# ---------------------------------------------------------------------------
+
 @app.post("/users", response_model=UserOut, dependencies=[Depends(require_auth)])
 def create_user(u: UserCreate, db: Session = Depends(get_db)):
     # prevent duplicates on user_id or email
-    exists = db.query(User).filter(or_(User.user_id == u.user_id, User.email == u.email)).first()
+    exists = db.query(User).filter(
+        or_(User.user_id == u.user_id, User.email == u.email)
+    ).first()
     if exists:
         raise HTTPException(status_code=400, detail="User ID or email already exists")
 
     user = User(
-        user_id=u.user_id, nick=u.nick, email=u.email,
-        wallet=u.wallet, network=u.network,
-        status="approved"
+        user_id=u.user_id,
+        nick=u.nick,
+        email=u.email,
+        wallet=u.wallet,
+        network=u.network,
     )
-    db.add(user); db.commit(); db.refresh(user)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
     return user
 
 @app.get("/users", response_model=List[UserOut], dependencies=[Depends(require_auth)])
-def list_users(db: Session = Depends(get_db), q: Optional[str] = None, status_filter: Optional[str] = None):
+def list_users(db: Session = Depends(get_db), q: Optional[str] = None):
     query = db.query(User)
     if q:
         like = f"%{q}%"
@@ -147,78 +160,146 @@ def list_users(db: Session = Depends(get_db), q: Optional[str] = None, status_fi
             User.email.ilike(like),
             User.wallet.ilike(like),
         ))
-    if status_filter in {"pending","approved","denied"}:
-        query = query.filter(User.status == status_filter)
     return query.order_by(User.id.desc()).all()
 
 @app.get("/users/{user_id}", response_model=UserOut, dependencies=[Depends(require_auth)])
 def get_user(user_id: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.user_id == user_id).first()
-    if not user: raise HTTPException(status_code=404, detail="Not found")
-    return user
-
-@app.patch("/users/{user_id}/status", response_model=UserOut, dependencies=[Depends(require_auth)])
-def update_user_status(user_id: str, body: UserStatusUpdate, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.user_id == user_id).first()
-    if not user: raise HTTPException(status_code=404, detail="Not found")
-    user.status = body.status
-    db.commit(); db.refresh(user)
+    if not user:
+        raise HTTPException(status_code=404, detail="Not found")
     return user
 
 @app.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_auth)])
 def delete_user(user_id: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.user_id == user_id).first()
-    if not user: raise HTTPException(status_code=404, detail="Not found")
-    db.delete(user); db.commit()
+    if not user:
+        raise HTTPException(status_code=404, detail="Not found")
+    db.delete(user)
+    db.commit()
     return
 
-# -----------------------------------------------------------------------------
-# Public self-add (NO auth) -> creates PENDING entries
-# -----------------------------------------------------------------------------
-@app.post("/users/public", status_code=status.HTTP_201_CREATED)
-def public_self_add(u: UserCreate, db: Session = Depends(get_db)):
-    if not u.user_id or not u.email or not u.wallet or not u.network:
-        raise HTTPException(status_code=400, detail="Missing required fields")
+# ---------------------------------------------------------------------------
+# Pending requests (Public form + Admin moderation)
+# ---------------------------------------------------------------------------
+
+@app.post("/users/public", status_code=201)
+def public_submit(u: UserCreate, db: Session = Depends(get_db)):
+    """
+    Public form submission. Stores into pending_users.
+    If a pending record for the same user_id exists, replace it.
+    """
+    # If user already approved, do not allow duplicate
     exists = db.query(User).filter(or_(User.user_id == u.user_id, User.email == u.email)).first()
     if exists:
-        return {"ok": True, "message": "Already on file"}
-    user = User(
-        user_id=u.user_id.strip(),
-        nick=(u.nick or "").strip(),
-        email=u.email.strip(),
-        wallet=u.wallet.strip(),
-        network=u.network.strip(),
-        status="pending"
-    )
-    db.add(user); db.commit(); db.refresh(user)
-    return {"ok": True, "id": user.id, "status": user.status}
+        # Treat as conflict – Admin has this user already
+        raise HTTPException(status_code=409, detail="User already exists")
 
-# -----------------------------------------------------------------------------
-# Tx logs (ADMIN)
-# -----------------------------------------------------------------------------
+    pending = db.query(PendingUser).filter(PendingUser.user_id == u.user_id).first()
+    if pending:
+        pending.nick = u.nick
+        pending.email = u.email
+        pending.wallet = u.wallet
+        pending.network = u.network
+    else:
+        pending = PendingUser(
+            user_id=u.user_id,
+            nick=u.nick,
+            email=u.email,
+            wallet=u.wallet,
+            network=u.network,
+        )
+        db.add(pending)
+
+    db.commit()
+    return {"ok": True}
+
+@app.get("/users/pending", dependencies=[Depends(require_auth)])
+def list_pending(db: Session = Depends(get_db)):
+    """Return all pending records for admin review."""
+    rows = db.query(PendingUser).order_by(PendingUser.id.desc()).all()
+    return [
+        dict(
+            id=r.id,
+            user_id=r.user_id,
+            nick=r.nick,
+            email=r.email,
+            wallet=r.wallet,
+            network=r.network,
+            created_at=str(r.created_at) if r.created_at else None,
+        ) for r in rows
+    ]
+
+@app.post("/users/pending/{user_id}/approve", dependencies=[Depends(require_auth)])
+def approve_pending(user_id: str, db: Session = Depends(get_db)):
+    p = db.query(PendingUser).filter(PendingUser.user_id == user_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # Prevent duplicates if admin approved earlier
+    exists = db.query(User).filter(or_(User.user_id == p.user_id, User.email == p.email)).first()
+    if exists:
+        # just remove the pending record
+        db.delete(p)
+        db.commit()
+        return {"ok": True, "already_present": True}
+
+    user = User(
+        user_id=p.user_id,
+        nick=p.nick,
+        email=p.email,
+        wallet=p.wallet,
+        network=p.network,
+    )
+    db.add(user)
+    db.delete(p)
+    db.commit()
+    db.refresh(user)
+    return {"ok": True, "user": dict(
+        id=user.id, user_id=user.user_id, nick=user.nick, email=user.email,
+        wallet=user.wallet, network=user.network, total_paid=float(user.total_paid or 0.0)
+    )}
+
+@app.post("/users/pending/{user_id}/deny", dependencies=[Depends(require_auth)])
+def deny_pending(user_id: str, db: Session = Depends(get_db)):
+    p = db.query(PendingUser).filter(PendingUser.user_id == user_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Not found")
+    db.delete(p)
+    db.commit()
+    return {"ok": True}
+
+# ---------------------------------------------------------------------------
+# Tx logs
+# ---------------------------------------------------------------------------
+
 @app.post("/tx", response_model=TxOut, dependencies=[Depends(require_auth)])
 def create_tx(t: TxCreate, db: Session = Depends(get_db)):
     log = TxLog(**t.dict())
     db.add(log)
+
+    # bump total_paid on success
     if (t.status or "").lower() == "success":
         u = db.query(User).filter(User.user_id == t.user_id).first()
-        if u: u.total_paid = float(u.total_paid or 0) + float(t.amount)
-    db.commit(); db.refresh(log)
+        if u:
+            u.total_paid = float(u.total_paid or 0) + float(t.amount)
+
+    db.commit()
+    db.refresh(log)
     return log
 
 @app.get("/tx/user/{user_id}", response_model=List[TxOut], dependencies=[Depends(require_auth)])
 def tx_by_user(user_id: str, db: Session = Depends(get_db)):
     return db.query(TxLog).filter(TxLog.user_id == user_id).order_by(TxLog.id.desc()).all()
 
-# -----------------------------------------------------------------------------
-# Pay (ADMIN)
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Pay (one-click payout log; off-chain recording)
+# ---------------------------------------------------------------------------
+
 @app.post("/pay", dependencies=[Depends(require_auth)])
 def pay(p: PayIn, db: Session = Depends(get_db)):
     u = db.query(User).filter(User.user_id == p.user_id).first()
-    if not u: raise HTTPException(status_code=404, detail="User not found")
-    if u.status != "approved":
-        raise HTTPException(status_code=400, detail="User is not approved for payouts")
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
     if p.amount is None or p.amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be > 0")
 
@@ -226,11 +307,18 @@ def pay(p: PayIn, db: Session = Depends(get_db)):
     status_str = (p.status or "success").lower()
 
     log = TxLog(
-        user_id=p.user_id, amount=p.amount, status=status_str,
-        tx_hash=tx_hash, network=p.network, meta=None
+        user_id=p.user_id,
+        amount=p.amount,
+        status=status_str,
+        tx_hash=tx_hash,
+        network=p.network,
+        meta=None,
     )
     db.add(log)
+
     if status_str == "success":
         u.total_paid = float(u.total_paid or 0) + float(p.amount)
-    db.commit(); db.refresh(log)
+
+    db.commit()
+    db.refresh(log)
     return {"ok": True, "tx_id": log.id, "user_total_paid": u.total_paid}
