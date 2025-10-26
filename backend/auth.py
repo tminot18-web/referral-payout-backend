@@ -1,4 +1,3 @@
-)
 # backend/auth.py
 import os
 import bcrypt
@@ -19,10 +18,11 @@ JWT_EXPIRE_MIN = int(os.getenv("JWT_EXPIRE_MIN", "43200"))
 
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@example.com")
 
-# Preferred: bcrypt hash string (e.g., from bcrypt.gensalt())
+# Preferred: bcrypt hash string (e.g., bcrypt.hashpw(...).decode())
 ADMIN_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH", "")
-# Convenience for local/dev: allow a plain password if you haven't hashed yet.
+# Dev convenience if you haven't hashed yet:
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
@@ -37,18 +37,15 @@ def _verify_password(plain: str) -> bool:
     Verify 'plain' matches either ADMIN_PASSWORD_HASH (bcrypt) or ADMIN_PASSWORD (raw).
     Prefer using ADMIN_PASSWORD_HASH in prod.
     """
-    # bcrypt hash path (prefer)
     if ADMIN_PASSWORD_HASH:
         try:
             return bcrypt.checkpw(plain.encode(), ADMIN_PASSWORD_HASH.encode())
         except Exception:
             return False
 
-    # raw password path (dev only)
     if ADMIN_PASSWORD:
         return plain == ADMIN_PASSWORD
 
-    # no password configured → fail closed
     return False
 
 
@@ -71,7 +68,6 @@ def create_token() -> str:
         "sub": ADMIN_EMAIL,
         "iat": int(iat.timestamp()),
         "exp": int(exp.timestamp()),
-        # You could add a 'jti' here if you plan to revoke tokens
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
@@ -102,13 +98,10 @@ def require_auth(
     """
     token = None
 
-    # Primary: cookie
     if session:
         token = session
 
-    # Fallback: Authorization header
     if not token and authorization:
-        # Handle case-insensitively and allow extra spaces
         parts = authorization.strip().split()
         if len(parts) == 2 and parts[0].lower() == "bearer":
             token = parts[1]
@@ -118,8 +111,8 @@ def require_auth(
 
     claims = _decode_token(token)
 
-    # OPTIONAL: verify the subject matches our configured admin
     if claims.get("sub") != ADMIN_EMAIL:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized subject")
 
     return claims
+
