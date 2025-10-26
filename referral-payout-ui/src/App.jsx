@@ -10,7 +10,7 @@ import {
   isMetaMaskAvailable, connectMetaMask, onEthereumEvents,
   isTronLinkAvailable, connectTronLink, waitForTronWeb,
   sendPayout,            // unified on-chain payout
-  evmRequireChain,       // enforce EVM chain (for ERC20 -> mainnet)
+  evmRequireChain,       // enforce EVM chain (for ERC20 → mainnet)
 } from "./lib/wallets";
 
 const cx = (...a) => a.filter(Boolean).join(" ");
@@ -22,8 +22,7 @@ const STABLECOIN = {
     token: "erc20",
     address: "0xdAC17F958D2ee523a2206206994597C13D831ec7", // USDT (Ethereum mainnet)
     decimals: 6,
-    // Optional chain enforcement (Ethereum mainnet)
-    chainIdHex: "0x1",
+    chainIdHex: "0x1", // Enforce Ethereum mainnet
   },
   TRC20: {
     chain: "tron",
@@ -48,7 +47,7 @@ export default function App() {
 
   // Payout form
   const [payUserId, setPayUserId] = useState("");
-  const [amount, setAmount] = useState("25"); // <-- interpreted as 25 USDT now
+  const [amount, setAmount] = useState("25"); // interpreted as 25 USDT
   const [network, setNetwork] = useState("ERC20"); // fallback if user lookup fails
   const [txHash, setTxHash] = useState("");
 
@@ -207,7 +206,7 @@ export default function App() {
     try {
       // If no tx hash provided, send on-chain USDT
       if (!finalTxHash) {
-        // Enforce Ethereum mainnet for ERC20 payouts (optional but recommended)
+        // Enforce Ethereum mainnet for ERC20 payouts (recommended)
         if (userNetwork === "ERC20" && cfg.chainIdHex) {
           await evmRequireChain(cfg.chainIdHex);
         }
@@ -216,9 +215,9 @@ export default function App() {
           chain: cfg.chain,               // "evm" | "tron"
           token: cfg.token,               // "erc20" | "trc20"
           tokenAddress: cfg.address,      // USDT contract by chain
-          decimals: cfg.decimals,         // 6 for USDT
+          decimals: cfg.decimals,         // USDT uses 6
           to: u.wallet,
-          amount: String(amt),            // e.g., "25" USDT
+          amount: String(amt),            // e.g., "5" USDT
         });
       }
 
@@ -485,7 +484,7 @@ export default function App() {
             {users.map(u => <option key={u.user_id} value={u.user_id}>{u.user_id} — {u.nick}</option>)}
           </select>
           <input className="border rounded p-2" value={amount} onChange={e => setAmount(e.target.value)} />
-          {/* Keep this manual network selector as fallback; actual send uses the user's saved network */}
+          {/* Manual network selector as fallback; actual send uses the user's saved network */}
           <select className="border rounded p-2" value={network} onChange={e => setNetwork(e.target.value)}>
             <option>ERC20</option>
             <option>TRC20</option>

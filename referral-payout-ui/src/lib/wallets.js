@@ -30,6 +30,14 @@ const erc20TransferData = (to, amountUnits) => {
   return selector + addr + val;
 };
 
+// Simple validators
+function isHexAddress(addr) {
+  return /^0x[0-9a-fA-F]{40}$/.test(addr || "");
+}
+function isBase58Tron(addr) {
+  return /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(addr || "");
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // MetaMask (EVM)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -65,29 +73,51 @@ export async function evmEnsure() {
   return { account: accounts[0] };
 }
 
+async function evmSelectedAccount() {
+  const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+  const from = accounts?.[0];
+  if (!from) throw new Error("No MetaMask account selected");
+  return from;
+}
+
 export async function evmChainId() {
   return await window.ethereum.request({ method: "eth_chainId" }); // e.g. '0x1'
 }
 
 export async function evmSendNative(to, amountEth) {
   await evmEnsure();
+  if (!isHexAddress(to)) throw new Error("Invalid EVM recipient address");
   const valueWei = toWei(amountEth);
-  // MetaMask fills "from" automatically for the active account
-  const txHash = await window.ethereum.request({
-    method: "eth_sendTransaction",
-    params: [{ to, value: toHex(valueWei) }],
-  });
+  let txHash;
+  try {
+    txHash = await window.ethereum.request({
+      method: "eth_sendTransaction",
+      params: [{ to, value: toHex(BigInt(valueWei)) }],
+    });
+  } catch (e) {
+    if (e?.code === 4001) throw new Error("Transaction rejected in MetaMask");
+    throw e;
+  }
   if (typeof txHash !== "string") throw new Error("EVM native send failed");
   return txHash;
 }
 
-export async function evmSendERC20(tokenAddress, to, amount, decimals = 6) {
+export async function evmSendERC20(tokenAddress, to, amount, decimals = 18) {
   await evmEnsure();
+  const from = await evmSelectedAccount();
+  if (!isHexAddress(tokenAddress)) throw new Error("Invalid token contract address");
+  if (!isHexAddress(to)) throw new Error("Invalid recipient address");
   const data = erc20TransferData(to, toUnits(amount, decimals));
-  const txHash = await window.ethereum.request({
-    method: "eth_sendTransaction",
-    params: [{ to: tokenAddress, data }],
-  });
+  let txHash;
+  try {
+    txHash = await window.ethereum.request({
+      method: "eth_sendTransaction",
+      params: [{ from, to: tokenAddress, value: "0x0", data }],
+    });
+  } catch (e) {
+    if (e?.code === 4001) throw new Error("Transaction rejected in MetaMask");
+    throw e;
+  }
   if (typeof txHash !== "string") throw new Error("EVM ERC-20 send failed");
   return txHash;
 }
@@ -151,18 +181,30 @@ export async function tronEnsure() {
 
 export async function tronSendNative(to, amountTrx) {
   await tronEnsure();
-  const sun = Math.round(parseFloat(amountTrx) * 1_000_000); // 1 TRX = 1e6 Sun
-  const res = await window.tronWeb.trx.sendTransaction(to, sun);
-  // Expected: { result: true, txid: '...' }
+  if (!isBase58Tron(to)) throw new Error("Invalid Tron recipient address");
+  const sun = window.tronWeb.toSun(String(amountTrx)); // exact conversion, no FP rounding
+  let res;
+  try {
+    res = await window.tronWeb.trx.sendTransaction(to, sun);
+  } catch (e) {
+    throw new Error(e?.message || "TRX send failed");
+  }
   if (!res?.txid) throw new Error("TRX send failed");
   return res.txid;
 }
 
 export async function tronSendTRC20(tokenAddress, to, amount, decimals = 6) {
   await tronEnsure();
+  if (!isBase58Tron(to)) throw new Error("Invalid Tron recipient address");
   const contract = await window.tronWeb.contract().at(tokenAddress);
   const units = toUnits(amount, decimals);
-  const txid = await contract.transfer(to, units).send(); // returns string txid
+  const toHexAddr = window.tronWeb.address.toHex(to); // TRON contracts prefer hex
+  let txid;
+  try {
+    txid = await contract.transfer(toHexAddr, units).send({ feeLimit: 100_000_000 }); // 100 TRX
+  } catch (e) {
+    throw new Error(e?.message || "TRC-20 send failed");
+  }
   if (typeof txid !== "string") throw new Error("TRC-20 send failed");
   return txid;
 }
