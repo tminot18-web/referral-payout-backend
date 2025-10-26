@@ -1,8 +1,40 @@
 // src/lib/wallets.js
 
-// ---------- MetaMask (EVM) ----------
+// ─────────────────────────────────────────────────────────────────────────────
+// Utilities
+// ─────────────────────────────────────────────────────────────────────────────
+const toHex = (n) => "0x" + BigInt(n).toString(16);
+
+// Convert decimal string (e.g., "0.05") to wei (as a decimal string)
+const toWei = (eth) => {
+  const [whole, frac = ""] = String(eth).trim().split(".");
+  const weiWhole = BigInt(whole || "0") * 10n ** 18n;
+  const weiFrac = BigInt((frac + "0".repeat(18)).slice(0, 18));
+  return (weiWhole + weiFrac).toString();
+};
+
+// Generic units converter for token decimals
+const toUnits = (amt, decimals) => {
+  const [w, f = ""] = String(amt).trim().split(".");
+  const base = 10n ** BigInt(decimals);
+  const wN = BigInt(w || "0") * base;
+  const fN = BigInt((f + "0".repeat(decimals)).slice(0, decimals));
+  return (wN + fN).toString();
+};
+
+// Minimal ERC-20 transfer data payload: transfer(address,uint256) -> 0xa9059cbb
+const erc20TransferData = (to, amountUnits) => {
+  const selector = "0xa9059cbb";
+  const addr = String(to).toLowerCase().replace(/^0x/, "").padStart(64, "0");
+  const val = BigInt(amountUnits).toString(16).padStart(64, "0");
+  return selector + addr + val;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MetaMask (EVM)
+// ─────────────────────────────────────────────────────────────────────────────
 export function isMetaMaskAvailable() {
-  return !!(window.ethereum && window.ethereum.isMetaMask);
+  return !!(window.ethereum && (window.ethereum.isMetaMask || window.ethereum.isBraveWallet === false));
 }
 
 export async function connectMetaMask() {
@@ -26,7 +58,59 @@ export function onEthereumEvents({ onAccountsChanged, onChainChanged } = {}) {
   };
 }
 
-// ---------- TronLink (TRON) ----------
+export async function evmEnsure() {
+  if (!isMetaMaskAvailable()) throw new Error("MetaMask not available");
+  const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+  if (!accounts?.length) throw new Error("No MetaMask account");
+  return { account: accounts[0] };
+}
+
+export async function evmChainId() {
+  return await window.ethereum.request({ method: "eth_chainId" }); // e.g. '0x1'
+}
+
+export async function evmSendNative(to, amountEth) {
+  await evmEnsure();
+  const valueWei = toWei(amountEth);
+  // MetaMask fills "from" automatically for the active account
+  const txHash = await window.ethereum.request({
+    method: "eth_sendTransaction",
+    params: [{ to, value: toHex(valueWei) }],
+  });
+  if (typeof txHash !== "string") throw new Error("EVM native send failed");
+  return txHash;
+}
+
+export async function evmSendERC20(tokenAddress, to, amount, decimals = 6) {
+  await evmEnsure();
+  const data = erc20TransferData(to, toUnits(amount, decimals));
+  const txHash = await window.ethereum.request({
+    method: "eth_sendTransaction",
+    params: [{ to: tokenAddress, data }],
+  });
+  if (typeof txHash !== "string") throw new Error("EVM ERC-20 send failed");
+  return txHash;
+}
+
+// Optional helper if you want to enforce network before sending
+export async function evmRequireChain(chainIdHex) {
+  const have = await evmChainId();
+  if (have === chainIdHex) return true;
+  try {
+    await window.ethereum.request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: chainIdHex }],
+    });
+    return true;
+  } catch (e) {
+    // If the chain is not added, you could call wallet_addEthereumChain here.
+    throw new Error("Please switch MetaMask to the required network");
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TronLink (TRON)
+// ─────────────────────────────────────────────────────────────────────────────
 export function isTronLinkAvailable() {
   return !!(window.tronLink || window.tronWeb);
 }
@@ -36,8 +120,8 @@ export async function connectTronLink() {
   if (window.tronLink?.request) {
     try {
       await window.tronLink.request({ method: "tron_requestAccounts" });
-    } catch (e) {
-      // user rejected
+    } catch {
+      // user may reject; we'll check defaultAddress below
     }
   }
   const addr = window.tronWeb?.defaultAddress?.base58 || null;
@@ -45,7 +129,7 @@ export async function connectTronLink() {
   return { account: addr };
 }
 
-// poll for tronWeb readiness if needed (TronLink sometimes injects late)
+// Poll for tronWeb readiness if needed (TronLink sometimes injects late)
 export async function waitForTronWeb(timeoutMs = 3000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -53,5 +137,63 @@ export async function waitForTronWeb(timeoutMs = 3000) {
     await new Promise((r) => setTimeout(r, 200));
   }
   return false;
+}
+
+export async function tronEnsure() {
+  if (!isTronLinkAvailable()) throw new Error("TronLink not available");
+  if (!window.tronWeb?.defaultAddress?.base58) {
+    await window.tronLink?.request?.({ method: "tron_requestAccounts" });
+  }
+  const addr = window.tronWeb?.defaultAddress?.base58;
+  if (!addr) throw new Error("TronLink not authorized");
+  return { account: addr };
+}
+
+export async function tronSendNative(to, amountTrx) {
+  await tronEnsure();
+  const sun = Math.round(parseFloat(amountTrx) * 1_000_000); // 1 TRX = 1e6 Sun
+  const res = await window.tronWeb.trx.sendTransaction(to, sun);
+  // Expected: { result: true, txid: '...' }
+  if (!res?.txid) throw new Error("TRX send failed");
+  return res.txid;
+}
+
+export async function tronSendTRC20(tokenAddress, to, amount, decimals = 6) {
+  await tronEnsure();
+  const contract = await window.tronWeb.contract().at(tokenAddress);
+  const units = toUnits(amount, decimals);
+  const txid = await contract.transfer(to, units).send(); // returns string txid
+  if (typeof txid !== "string") throw new Error("TRC-20 send failed");
+  return txid;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unified payout entry
+// ─────────────────────────────────────────────────────────────────────────────
+// config = { chain: 'evm'|'tron', token: 'native'|'erc20'|'trc20', tokenAddress?, decimals?, to, amount }
+export async function sendPayout(config) {
+  const { chain, token = "native", tokenAddress, decimals = 6, to, amount } = config || {};
+  if (!to) throw new Error("Missing recipient");
+  if (!amount || Number(amount) <= 0) throw new Error("Amount must be > 0");
+
+  if (chain === "evm") {
+    if (token === "native") return await evmSendNative(to, amount);
+    if (token === "erc20") {
+      if (!tokenAddress) throw new Error("Missing ERC-20 token address");
+      return await evmSendERC20(tokenAddress, to, amount, decimals);
+    }
+    throw new Error("Unknown EVM token type");
+  }
+
+  if (chain === "tron") {
+    if (token === "native") return await tronSendNative(to, amount);
+    if (token === "trc20") {
+      if (!tokenAddress) throw new Error("Missing TRC-20 token address");
+      return await tronSendTRC20(tokenAddress, to, amount, decimals);
+    }
+    throw new Error("Unknown TRON token type");
+  }
+
+  throw new Error("Unknown chain");
 }
 

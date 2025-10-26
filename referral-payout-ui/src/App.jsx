@@ -3,12 +3,13 @@ import { useEffect, useMemo, useState } from "react";
 import {
   session, login, logout,
   listPending, listApproved,
-  approvePending, denyPending,   // <-- changed
+  approvePending, denyPending,
   createUser, deleteUser, pay
 } from "./lib/api";
 import {
   isMetaMaskAvailable, connectMetaMask, onEthereumEvents,
-  isTronLinkAvailable, connectTronLink, waitForTronWeb
+  isTronLinkAvailable, connectTronLink, waitForTronWeb,
+  sendPayout, // <-- added: unified on-chain payout
 } from "./lib/wallets";
 
 const cx = (...a) => a.filter(Boolean).join(" ");
@@ -29,7 +30,7 @@ export default function App() {
   // Payout form
   const [payUserId, setPayUserId] = useState("");
   const [amount, setAmount] = useState("25");
-  const [network, setNetwork] = useState("ERC20");
+  const [network, setNetwork] = useState("ERC20"); // fallback if user lookup fails
   const [txHash, setTxHash] = useState("");
 
   // Wallet state
@@ -80,9 +81,19 @@ export default function App() {
       if (mounted && addr) setTronAccount(addr);
     })();
 
+    // Re-check when tab regains focus (helps buttons enable after wallet popups)
+    const onVis = () => { if (!document.hidden) {
+      setMmAvailable(isMetaMaskAvailable());
+      setTlAvailable(!!(window.tronWeb?.defaultAddress?.base58) || isTronLinkAvailable());
+    }};
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onVis);
+
     return () => {
       mounted = false;
       off();
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onVis);
     };
   }, []);
 
@@ -106,7 +117,7 @@ export default function App() {
     setAuthed(false);
   }
 
-  // Pending actions (use dedicated endpoints)
+  // Pending actions
   async function onApprove(id) {
     try {
       await approvePending(id);
@@ -153,24 +164,65 @@ export default function App() {
     }
   }
 
-  // Payout
+  // ------- Payout (now with real on-chain send) -------
   async function onSendPayout(e) {
     e.preventDefault();
+
     const amt = Number(amount);
-    if (!payUserId || !amt || amt <= 0) return;
+    if (!payUserId || !amt || amt <= 0) {
+      return alert("Enter a valid user and amount.");
+    }
+
+    // Look up the selected user for wallet + network truth
+    const u = users.find(x => x.user_id === payUserId);
+    if (!u) {
+      // fallback to manual inputs if somehow missing
+      return alert("Selected user not found.");
+    }
+    if (!u.wallet) {
+      return alert("Selected user has no wallet address.");
+    }
+    const userNetwork = (u.network || network || "ERC20").toUpperCase(); // "ERC20" | "TRC20"
+
+    let finalTxHash = (txHash || "").trim();
+
     try {
+      // If no tx hash provided, send on-chain via wallet
+      if (!finalTxHash) {
+        // For MVP we send native coin on the user's chain
+        const chain = userNetwork === "TRC20" ? "tron" : "evm";
+        // If you want token payouts (USDT), switch token + add tokenAddress/decimals
+        // const token = userNetwork === "TRC20" ? "trc20" : "erc20";
+        // const tokenAddress = userNetwork === "TRC20"
+        //   ? "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8" // USDT-TRC20 mainnet (example)
+        //   : "0xdAC17F958D2ee523a2206206994597C13D831ec7"; // USDT-ERC20 mainnet (example)
+        // const decimals = 6;
+
+        finalTxHash = await sendPayout({
+          chain,
+          token: "native",
+          to: u.wallet,
+          amount: String(amt),
+          // tokenAddress, decimals, // if using tokens
+        });
+      }
+
       const res = await pay({
-        user_id: payUserId,
+        user_id: u.user_id,
         amount: amt,
-        network,
-        tx_hash: txHash,
+        network: userNetwork,     // "ERC20" | "TRC20"
+        tx_hash: finalTxHash || undefined,
         status: "success"
       });
-      alert(`Paid ${amt} to ${payUserId} (tx #${res?.tx_id ?? "?"})`);
+
+      alert(`Paid ${amt} to ${u.user_id}\nTx: ${finalTxHash || `(logged #${res?.tx_id ?? "?"})`}`);
+
+      // Refresh totals
       const a = await listApproved();
       setUsers(a || []);
       setTxHash("");
     } catch (err) {
+      console.error(err);
       alert(err.message || "Payout failed");
     }
   }
@@ -182,8 +234,10 @@ export default function App() {
       const { account, chainId } = await connectMetaMask();
       setEthAccount(account || "");
       setEthChainId(chainId || "");
+      setMmAvailable(true);
     } catch (e) {
       setWalletError(e.message || "MetaMask connect failed");
+      setMmAvailable(isMetaMaskAvailable()); // re-evaluate
     }
   }
 
@@ -193,8 +247,10 @@ export default function App() {
       await waitForTronWeb(3000);
       const { account } = await connectTronLink();
       setTronAccount(account || "");
+      setTlAvailable(true);
     } catch (e) {
       setWalletError(e.message || "TronLink connect failed");
+      setTlAvailable(!!(window.tronWeb?.defaultAddress?.base58) || isTronLinkAvailable());
     }
   }
 
@@ -425,6 +481,10 @@ export default function App() {
             </button>
           </div>
         </form>
+        <p className="text-xs text-gray-500 mt-2">
+          Tip: leave “Tx Hash” blank to send via the connected wallet (native coin on selected chain).
+          Provide a Tx Hash to skip sending and only log the payout.
+        </p>
       </section>
     </div>
   );
