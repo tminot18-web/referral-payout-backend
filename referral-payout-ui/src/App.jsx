@@ -2,7 +2,8 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   session, login, logout,
-  listPending, listApproved, updateUserStatus,
+  listPending, listApproved,
+  approvePending, denyPending,   // <-- changed
   createUser, deleteUser, pay
 } from "./lib/api";
 import {
@@ -105,10 +106,10 @@ export default function App() {
     setAuthed(false);
   }
 
-  // Pending actions
+  // Pending actions (use dedicated endpoints)
   async function onApprove(id) {
     try {
-      await updateUserStatus(id, "approved");
+      await approvePending(id);
       const [p, a] = await Promise.all([listPending(), listApproved()]);
       setPending(p || []);
       setUsers(a || []);
@@ -119,8 +120,8 @@ export default function App() {
 
   async function onDeny(id) {
     try {
-      await updateUserStatus(id, "denied");
-      const [p] = await Promise.all([listPending()]);
+      await denyPending(id);
+      const p = await listPending();
       setPending(p || []);
     } catch (err) {
       alert(err.message || "Deny failed");

@@ -1,148 +1,137 @@
 // src/lib/api.js
 
-// Resolve API base:
-// - Prefer Vite env: import.meta.env.VITE_API_BASE (set at build time)
-// - Fallback: window.API_BASE (can be injected at runtime)
-// - Else: empty string (relative to same origin)
+// ---- Base URL --------------------------------------------------------------
 const API_BASE =
-  (import.meta.env?.VITE_API_BASE) ||
+  (typeof import.meta !== "undefined" &&
+    import.meta.env &&
+    import.meta.env.VITE_API_BASE) ||
   (typeof window !== "undefined" && window.API_BASE) ||
   "";
 
-// Generic JSON helper with good error messages and tolerance for empty bodies
-async function j(req) {
+// Normalize base + path
+function joinUrl(path) {
+  if (!API_BASE) return path;
+  return `${API_BASE.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
+}
+
+// Common JSON/error handler
+async function asJson(req) {
   const res = await req;
+  const text = await res.text();
+  const data = text ? tryJson(text) : null;
+
   if (!res.ok) {
-    let body;
-    try { body = await res.json(); } catch { /* ignore parse errors */ }
     const msg =
-      body?.detail ||
-      body?.message ||
+      (data && (data.detail || data.message)) ||
       res.statusText ||
       "Request failed";
     const err = new Error(msg);
     err.status = res.status;
-    err.body = body;
+    err.body = data;
     throw err;
   }
-  const text = await res.text(); // some endpoints return 204/201 with no body
-  return text ? JSON.parse(text) : null;
+  return data;
 }
 
-/* -----------------------------  AUTH  ---------------------------------- */
+function tryJson(text) {
+  try { return JSON.parse(text); } catch { return { raw: text }; }
+}
 
+// ---- Auth ------------------------------------------------------------------
 export const session = () =>
-  j(fetch(`${API_BASE}/session`, { credentials: "include" }));
+  asJson(fetch(joinUrl("/session"), { credentials: "include" }));
 
 export const login = (email, password) =>
-  j(fetch(`${API_BASE}/login`, {
+  asJson(fetch(joinUrl("/login"), {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password })
+    body: JSON.stringify({ email, password }),
   }));
 
 export const logout = () =>
-  j(fetch(`${API_BASE}/logout`, {
-    method: "POST",
-    credentials: "include"
-  }));
+  asJson(fetch(joinUrl("/logout"), { method: "POST", credentials: "include" }));
 
-/* -----------------------------  USERS  --------------------------------- */
-
-// List approved users (the backend returns all users; optionally supports q/status_filter)
-export const listUsers = (statusFilter, q) => {
-  const url = new URL(`${API_BASE}/users`, window.location.origin);
+// ---- Approved/denied users (main users table) ------------------------------
+export const listUsers = (statusFilter) => {
+  const url = new URL(joinUrl("/users"), window.location.origin);
   if (statusFilter) url.searchParams.set("status_filter", statusFilter);
-  if (q) url.searchParams.set("q", q);
-  return j(fetch(url.toString(), { credentials: "include" }));
+  return asJson(fetch(url.toString(), { credentials: "include" }));
 };
 
 export const getUser = (userId) =>
-  j(fetch(`${API_BASE}/users/${encodeURIComponent(userId)}`, {
-    credentials: "include"
+  asJson(fetch(joinUrl(`/users/${encodeURIComponent(userId)}`), {
+    credentials: "include",
   }));
 
 export const createUser = (payload) =>
-  j(fetch(`${API_BASE}/users`, {
+  asJson(fetch(joinUrl("/users"), {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   }));
 
 export const deleteUser = (userId) =>
-  j(fetch(`${API_BASE}/users/${encodeURIComponent(userId)}`, {
+  asJson(fetch(joinUrl(`/users/${encodeURIComponent(userId)}`), {
     method: "DELETE",
-    credentials: "include"
+    credentials: "include",
   }));
 
-/* ----------------------  PENDING & MODERATION  ------------------------- */
+export const updateUserStatus = (userId, status) =>
+  asJson(fetch(joinUrl(`/users/${encodeURIComponent(userId)}/status`), {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }), // "pending" | "approved" | "denied"
+  }));
 
-// Admin: fetch pending entries
+export const listApproved = () => listUsers("approved");
+
+// ---- Pending users (pending_users table) -----------------------------------
 export const listPending = () =>
-  j(fetch(`${API_BASE}/users/pending`, { credentials: "include" }));
+  asJson(fetch(joinUrl("/users/pending"), { credentials: "include" }));
 
-// Admin: approve/deny a specific pending user_id
 export const approvePending = (userId) =>
-  j(fetch(`${API_BASE}/users/pending/${encodeURIComponent(userId)}/approve`, {
+  asJson(fetch(joinUrl(`/users/pending/${encodeURIComponent(userId)}/approve`), {
     method: "POST",
-    credentials: "include"
+    credentials: "include",
   }));
 
 export const denyPending = (userId) =>
-  j(fetch(`${API_BASE}/users/pending/${encodeURIComponent(userId)}/deny`, {
+  asJson(fetch(joinUrl(`/users/pending/${encodeURIComponent(userId)}/deny`), {
     method: "POST",
-    credentials: "include"
+    credentials: "include",
   }));
 
-/* -----------------------------  PUBLIC FORM  --------------------------- */
-
-// Public form submit (no cookies required)
+// ---- Public form (no cookies) ----------------------------------------------
 export const publicSelfAdd = (payload) =>
-  j(fetch(`${API_BASE}/users/public`, {
+  asJson(fetch(joinUrl("/users/public"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "omit",
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   }));
 
-/* ------------------------------  TX / PAY  ----------------------------- */
-
+// ---- Tx / Pay --------------------------------------------------------------
 export const createTx = (payload) =>
-  j(fetch(`${API_BASE}/tx`, {
+  asJson(fetch(joinUrl("/tx"), {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   }));
 
 export const txByUser = (userId) =>
-  j(fetch(`${API_BASE}/tx/user/${encodeURIComponent(userId)}`, {
-    credentials: "include"
+  asJson(fetch(joinUrl(`/tx/user/${encodeURIComponent(userId)}`), {
+    credentials: "include",
   }));
 
 export const pay = (payload) =>
-  j(fetch(`${API_BASE}/pay`, {
+  asJson(fetch(joinUrl("/pay"), {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   }));
-
-/* --------------------  COMPATIBILITY SHIMS  ---------------------------- */
-/* Keep existing App.jsx imports working without edits. */
-
-// Old UI expects listApproved(); backend returns all approved users via /users.
-// Just delegate to listUsers() and let the UI render the table.
-export const listApproved = () => listUsers();
-
-// Old UI expects updateUserStatus(userId, "approved" | "denied").
-// Map that to the new moderation endpoints.
-export const updateUserStatus = (userId, status) => {
-  const s = String(status || "").toLowerCase();
-  if (s === "approved") return approvePending(userId);
-  if (s === "denied")   return denyPending(userId);
-  return Promise.reject(new Error(`Unsupported status: ${status}`));
-};
 
