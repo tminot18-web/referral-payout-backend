@@ -11,19 +11,21 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, or_
+from sqlalchemy import Column, Integer, String, DateTime, or_
 from sqlalchemy.sql import func
 from sqlalchemy.orm import Session
 
 # Local modules
 from db import Base, engine, get_db
-from models import User, TxLog  # existing models file is kept as-is
+from models import User, TxLog
 from schemas import (
     UserCreate, UserOut,
     TxCreate, TxOut,
     LoginIn, PayIn,
+    UserStatusUpdate,          # <- used by PATCH /users/{user_id}/status
 )
 from auth import verify_admin, create_token, require_auth
+
 
 # ---------------------------------------------------------------------------
 # Environment & app setup
@@ -31,25 +33,27 @@ from auth import verify_admin, create_token, require_auth
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
 
+
 # --- Define a PendingUser model here so the table always exists -------------
-# (Safe even if you already added it in models.py; SQLAlchemy will reconcile.)
+# (Safe even if also present in models.py; SQLAlchemy will reconcile.)
 class PendingUser(Base):
     __tablename__ = "pending_users"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(String, unique=True, index=True)     # u_123 etc
+    user_id = Column(String, unique=True, index=True)  # u_123 etc
     nick = Column(String)
     email = Column(String, index=True)
-    wallet = Column(String, index=True)                   # 0x... or T...
-    network = Column(String)                              # ERC20 | TRC20
+    wallet = Column(String, index=True)                # 0x... or T...
+    network = Column(String)                           # ERC20 | TRC20
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
 
 # Create all tables (users, txlogs, pending_users)
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="Referral Payout API",
-    version="0.2.0",
+    version="0.3.0",
     docs_url="/docs",
     redoc_url=None,
     openapi_url="/openapi.json",
@@ -82,12 +86,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 def cookie_kwargs() -> dict:
     """Cookie attributes tuned for local vs prod."""
     if IS_PROD:
         return dict(httponly=True, samesite="none", secure=True, max_age=60 * 60 * 24 * 7)
     else:
         return dict(httponly=True, samesite="lax", secure=False, max_age=60 * 60 * 24 * 7)
+
 
 # ---------------------------------------------------------------------------
 # Root & health
@@ -97,13 +103,16 @@ def cookie_kwargs() -> dict:
 def index():
     return RedirectResponse(url="/docs")
 
+
 @app.get("/healthz", include_in_schema=False)
 def healthz():
     return {"ok": True}
 
+
 @app.get("/session")
 def session_probe(dep: None = Depends(require_auth)):
     return {"authenticated": True}
+
 
 # ---------------------------------------------------------------------------
 # Auth
@@ -117,12 +126,14 @@ def login(payload: LoginIn, resp: Response):
     resp.set_cookie(key="session", value=token, **cookie_kwargs())
     return {"ok": True}
 
+
 @app.post("/logout", status_code=status.HTTP_200_OK)
 def logout(resp: Response):
     # must match attributes used when setting the cookie
     kw = cookie_kwargs()
     resp.delete_cookie(key="session", httponly=True, samesite=kw["samesite"])
     return {"ok": True}
+
 
 # ---------------------------------------------------------------------------
 # Users
@@ -149,6 +160,7 @@ def create_user(u: UserCreate, db: Session = Depends(get_db)):
     db.refresh(user)
     return user
 
+
 @app.get("/users", response_model=List[UserOut], dependencies=[Depends(require_auth)])
 def list_users(db: Session = Depends(get_db), q: Optional[str] = None):
     query = db.query(User)
@@ -162,12 +174,14 @@ def list_users(db: Session = Depends(get_db), q: Optional[str] = None):
         ))
     return query.order_by(User.id.desc()).all()
 
+
 @app.get("/users/{user_id}", response_model=UserOut, dependencies=[Depends(require_auth)])
 def get_user(user_id: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="Not found")
     return user
+
 
 @app.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_auth)])
 def delete_user(user_id: str, db: Session = Depends(get_db)):
@@ -177,6 +191,24 @@ def delete_user(user_id: str, db: Session = Depends(get_db)):
     db.delete(user)
     db.commit()
     return
+
+
+# NEW: Update a user's status (approved / pending / denied)
+@app.patch("/users/{user_id}/status", response_model=UserOut, dependencies=[Depends(require_auth)])
+def update_user_status(user_id: str, body: UserStatusUpdate, db: Session = Depends(get_db)):
+    """
+    Update a user's status. Valid values come from UserStatusUpdate enum:
+    'pending' | 'approved' | 'denied'
+    """
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    user.status = body.status  # schemas.UserStatusUpdate enforces enum values
+    db.commit()
+    db.refresh(user)
+    return user
+
 
 # ---------------------------------------------------------------------------
 # Pending requests (Public form + Admin moderation)
@@ -213,9 +245,9 @@ def public_submit(u: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     return {"ok": True}
 
+
 @app.get("/users/pending", dependencies=[Depends(require_auth)])
 def list_pending(db: Session = Depends(get_db)):
-    """Return all pending records for admin review."""
     rows = db.query(PendingUser).order_by(PendingUser.id.desc()).all()
     return [
         dict(
@@ -229,6 +261,7 @@ def list_pending(db: Session = Depends(get_db)):
         ) for r in rows
     ]
 
+
 @app.post("/users/pending/{user_id}/approve", dependencies=[Depends(require_auth)])
 def approve_pending(user_id: str, db: Session = Depends(get_db)):
     p = db.query(PendingUser).filter(PendingUser.user_id == user_id).first()
@@ -238,7 +271,6 @@ def approve_pending(user_id: str, db: Session = Depends(get_db)):
     # Prevent duplicates if admin approved earlier
     exists = db.query(User).filter(or_(User.user_id == p.user_id, User.email == p.email)).first()
     if exists:
-        # just remove the pending record
         db.delete(p)
         db.commit()
         return {"ok": True, "already_present": True}
@@ -254,10 +286,19 @@ def approve_pending(user_id: str, db: Session = Depends(get_db)):
     db.delete(p)
     db.commit()
     db.refresh(user)
-    return {"ok": True, "user": dict(
-        id=user.id, user_id=user.user_id, nick=user.nick, email=user.email,
-        wallet=user.wallet, network=user.network, total_paid=float(user.total_paid or 0.0)
-    )}
+    return {
+        "ok": True,
+        "user": dict(
+            id=user.id,
+            user_id=user.user_id,
+            nick=user.nick,
+            email=user.email,
+            wallet=user.wallet,
+            network=user.network,
+            total_paid=float(user.total_paid or 0.0),
+        ),
+    }
+
 
 @app.post("/users/pending/{user_id}/deny", dependencies=[Depends(require_auth)])
 def deny_pending(user_id: str, db: Session = Depends(get_db)):
@@ -267,6 +308,7 @@ def deny_pending(user_id: str, db: Session = Depends(get_db)):
     db.delete(p)
     db.commit()
     return {"ok": True}
+
 
 # ---------------------------------------------------------------------------
 # Tx logs
@@ -287,9 +329,11 @@ def create_tx(t: TxCreate, db: Session = Depends(get_db)):
     db.refresh(log)
     return log
 
+
 @app.get("/tx/user/{user_id}", response_model=List[TxOut], dependencies=[Depends(require_auth)])
 def tx_by_user(user_id: str, db: Session = Depends(get_db)):
     return db.query(TxLog).filter(TxLog.user_id == user_id).order_by(TxLog.id.desc()).all()
+
 
 # ---------------------------------------------------------------------------
 # Pay (one-click payout log; off-chain recording)
