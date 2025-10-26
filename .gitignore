@@ -26,3 +26,6 @@ __pycache__/
 *.sqlite
 *.db
 
+
+# temp
+jar.txt

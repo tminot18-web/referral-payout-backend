@@ -2,32 +2,52 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex, nofollow" />
   <title>Referral Payout — Join</title>
+
+  <!-- Inline 1x1 favicon to avoid /favicon.ico 404 in DevTools -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='8' fill='%234f46e5'/%3E%3C/svg%3E" />
+
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
   <style>
     :root {
-      --bg: #0b0f15; --card:#0f1520; --muted:#8aa1b1; --text:#e6eef5; --accent:#4f46e5; --accent-2:#6366f1; --ok:#16a34a; --err:#ef4444;
-      --border:#1f2a37;
+      --bg: #0b0f15; --card:#0f1520; --muted:#8aa1b1; --text:#e6eef5;
+      --accent:#4f46e5; --accent-2:#6366f1; --ok:#16a34a; --err:#ef4444; --border:#1f2a37;
     }
     * { box-sizing: border-box; }
-    body { margin:0; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji"; background: linear-gradient(180deg,#0b0f15 0%, #0b1118 100%); color:var(--text); }
+    body {
+      margin:0; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
+      background: linear-gradient(180deg,#0b0f15 0%, #0b1118 100%); color:var(--text);
+    }
     .wrap { max-width: 920px; margin: 56px auto; padding: 0 20px; }
     .title { font-size: clamp(28px, 4vw, 42px); font-weight: 700; letter-spacing:-0.02em; margin:0 0 10px; }
     .sub { color:var(--muted); margin:0 0 24px; font-size: 16px; }
-    .card { background: radial-gradient(1200px 600px at -20% -30%, rgba(79,70,229,0.16) 0%, rgba(79,70,229,0) 60%), var(--card); border:1px solid var(--border); border-radius: 16px; padding: 28px; }
+    .card {
+      background: radial-gradient(1200px 600px at -20% -30%, rgba(79,70,229,0.16) 0%, rgba(79,70,229,0) 60%), var(--card);
+      border:1px solid var(--border); border-radius: 16px; padding: 28px;
+    }
     .row { display:grid; grid-template-columns: 1fr; gap:16px; }
     @media(min-width:840px){ .row.two { grid-template-columns: 1fr 1fr; } }
     label { font-size:14px; color:var(--muted); margin-bottom:8px; display:block; }
-    input, select { width:100%; background:#0b1118; color:var(--text); border:1px solid #1f2a37; border-radius: 10px; padding:14px 14px; font-size:16px; outline:none; transition: all .15s ease; }
+    input, select {
+      width:100%; background:#0b1118; color:var(--text); border:1px solid #1f2a37;
+      border-radius: 10px; padding:14px; font-size:16px; outline:none; transition: all .15s ease;
+    }
     input:focus, select:focus { border-color:#334155; box-shadow: 0 0 0 3px rgba(79,70,229,.25); }
-    .btn { background: linear-gradient(90deg,var(--accent) 0%, var(--accent-2) 100%); border:none; color:white; padding:14px 18px; border-radius:12px; font-weight:600; font-size:16px; cursor:pointer; transition: transform .05s ease, filter .2s ease; }
+    .btn {
+      background: linear-gradient(90deg,var(--accent) 0%, var(--accent-2) 100%);
+      border:none; color:white; padding:14px 18px; border-radius:12px; font-weight:600; font-size:16px;
+      cursor:pointer; transition: transform .05s ease, filter .2s ease;
+    }
     .btn:hover { filter: brightness(1.05); }
     .btn:active { transform: translateY(1px); }
+    .btn[disabled] { opacity: .6; cursor: not-allowed; }
     .hint { margin-top: 8px; color:var(--muted); font-size: 14px; }
-    .msg { margin-top:14px; font-size:15px; }
+    .msg { margin-top:14px; font-size:15px; min-height: 1.2em; }
     .ok { color: var(--ok); }
     .err { color: var(--err); }
   </style>
@@ -38,27 +58,27 @@
     <p class="sub">Submit your details to be added to the payout list. An admin will review and approve the entry.</p>
 
     <div class="card">
-      <form id="joinForm" class="row">
+      <form id="joinForm" class="row" novalidate>
         <div class="row two">
           <div>
-            <label>User ID</label>
-            <input id="user_id" placeholder="u_004" required />
+            <label for="user_id">User ID</label>
+            <input id="user_id" name="user_id" placeholder="u_004" required autocomplete="off" />
             <div class="hint">Use the ID you’ll reference for payouts.</div>
           </div>
           <div>
-            <label>Nickname</label>
-            <input id="nick" placeholder="Ben" required />
+            <label for="nick">Nickname</label>
+            <input id="nick" name="nick" placeholder="Ben" required autocomplete="off" />
           </div>
         </div>
 
         <div class="row two">
           <div>
-            <label>Email</label>
-            <input id="email" type="email" placeholder="ben@example.com" required />
+            <label for="email">Email</label>
+            <input id="email" name="email" type="email" placeholder="ben@example.com" required autocomplete="email" />
           </div>
           <div>
-            <label>Network</label>
-            <select id="network">
+            <label for="network">Network</label>
+            <select id="network" name="network" required>
               <option value="ERC20">ERC20 (USDT on Ethereum)</option>
               <option value="TRC20">TRC20 (USDT on Tron)</option>
             </select>
@@ -66,14 +86,14 @@
         </div>
 
         <div>
-          <label>Wallet Address</label>
-          <input id="wallet" placeholder="0x…" required />
+          <label for="wallet">Wallet Address</label>
+          <input id="wallet" name="wallet" placeholder="0x…" required autocomplete="off" />
           <div class="hint">Provide the payout wallet for the selected network.</div>
         </div>
 
         <div class="row two" style="align-items:center">
           <button type="submit" class="btn" id="submitBtn">Submit for Review</button>
-          <div id="msg" class="msg"></div>
+          <div id="msg" class="msg" role="status" aria-live="polite"></div>
         </div>
       </form>
     </div>
@@ -84,17 +104,28 @@
   </div>
 
   <script>
-    // === API base on Netlify (your provided domain) ===
-    // It will send POST to https://gilded-nasturtium-b7295c.netlify.app/users/public
+    // ---- Configure your backend here ----
     const API_BASE = "https://referral-payout-backend.onrender.com";
 
     const form = document.getElementById('joinForm');
-    const msg = document.getElementById('msg');
-    const btn = document.getElementById('submitBtn');
+    const msg  = document.getElementById('msg');
+    const btn  = document.getElementById('submitBtn');
 
-    function setMessage(text, ok=false) {
+    function setMessage(text, ok = false) {
       msg.textContent = text;
       msg.className = 'msg ' + (ok ? 'ok' : 'err');
+    }
+
+    function validateFields(values) {
+      if (!values.user_id || !values.nick || !values.email || !values.wallet) {
+        setMessage("Please complete all fields.");
+        return false;
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email)) {
+        setMessage("Please enter a valid email address.");
+        return false;
+      }
+      return true;
     }
 
     form.addEventListener('submit', async (e) => {
@@ -102,7 +133,7 @@
       setMessage('');
       btn.disabled = true;
 
-      const payload = {
+      const values = {
         user_id: document.getElementById('user_id').value.trim(),
         nick:    document.getElementById('nick').value.trim(),
         email:   document.getElementById('email').value.trim(),
@@ -110,31 +141,43 @@
         network: document.getElementById('network').value
       };
 
+      if (!validateFields(values)) { btn.disabled = false; return; }
+
       try {
         const res = await fetch(`${API_BASE}/users/public`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          // This public route should not need cookies:
-          credentials: 'omit',
-          body: JSON.stringify(payload)
+          credentials: 'omit', // public endpoint; no cookies needed
+          body: JSON.stringify(values)
         });
 
+        // Friendly special case: user already exists (from admin approval)
+        if (res.status === 409) {
+          setMessage("This user already exists and cannot be re-submitted.", false);
+          btn.disabled = false;
+          return;
+        }
+
+        // Any 4xx/5xx with JSON detail
         if (!res.ok) {
-          const txt = await res.text().catch(() => '');
-          console.error('Submit failed', res.status, txt);
-          setMessage(`Error ${res.status}: ${txt || res.statusText}`);
+          let detail = '';
+          try { const j = await res.json(); detail = j.detail || ''; } catch {}
+          setMessage(`Error ${res.status}${detail ? ': ' + detail : ''}`);
+          btn.disabled = false;
+          return;
+        }
+
+        // Success
+        const data = await res.json().catch(() => ({}));
+        if (data && data.ok) {
+          setMessage("✅ Submitted! An admin will review shortly.", true);
+          form.reset();
         } else {
-          const data = await res.json().catch(()=>({}));
-          if (data && data.ok) {
-            setMessage('Thanks! Your submission was recorded.', true);
-            form.reset();
-          } else {
-            setMessage('Submission failed. Please try again.');
-          }
+          setMessage("Submission completed but response was unexpected. Please try again.");
         }
       } catch (err) {
         console.error('Network error', err);
-        setMessage('Network error. Please check your connection or try again.');
+        setMessage("Network error. Please try again.");
       } finally {
         btn.disabled = false;
       }
