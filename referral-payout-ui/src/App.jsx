@@ -9,10 +9,29 @@ import {
 import {
   isMetaMaskAvailable, connectMetaMask, onEthereumEvents,
   isTronLinkAvailable, connectTronLink, waitForTronWeb,
-  sendPayout, // <-- added: unified on-chain payout
+  sendPayout,            // unified on-chain payout
+  evmRequireChain,       // enforce EVM chain (for ERC20 -> mainnet)
 } from "./lib/wallets";
 
 const cx = (...a) => a.filter(Boolean).join(" ");
+
+// Hard-coded stablecoin map (USDT) by chain family
+const STABLECOIN = {
+  ERC20: {
+    chain: "evm",
+    token: "erc20",
+    address: "0xdAC17F958D2ee523a2206206994597C13D831ec7", // USDT (Ethereum mainnet)
+    decimals: 6,
+    // Optional chain enforcement (Ethereum mainnet)
+    chainIdHex: "0x1",
+  },
+  TRC20: {
+    chain: "tron",
+    token: "trc20",
+    address: "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8", // USDT (TRON mainnet)
+    decimals: 6,
+  },
+};
 
 export default function App() {
   const [authed, setAuthed] = useState(false);
@@ -29,7 +48,7 @@ export default function App() {
 
   // Payout form
   const [payUserId, setPayUserId] = useState("");
-  const [amount, setAmount] = useState("25");
+  const [amount, setAmount] = useState("25"); // <-- interpreted as 25 USDT now
   const [network, setNetwork] = useState("ERC20"); // fallback if user lookup fails
   const [txHash, setTxHash] = useState("");
 
@@ -81,11 +100,12 @@ export default function App() {
       if (mounted && addr) setTronAccount(addr);
     })();
 
-    // Re-check when tab regains focus (helps buttons enable after wallet popups)
-    const onVis = () => { if (!document.hidden) {
-      setMmAvailable(isMetaMaskAvailable());
-      setTlAvailable(!!(window.tronWeb?.defaultAddress?.base58) || isTronLinkAvailable());
-    }};
+    const onVis = () => {
+      if (!document.hidden) {
+        setMmAvailable(isMetaMaskAvailable());
+        setTlAvailable(!!(window.tronWeb?.defaultAddress?.base58) || isTronLinkAvailable());
+      }
+    };
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("focus", onVis);
 
@@ -164,7 +184,7 @@ export default function App() {
     }
   }
 
-  // ------- Payout (now with real on-chain send) -------
+  // ------- Payout (USDT stablecoin on ERC20/TRC20) -------
   async function onSendPayout(e) {
     e.preventDefault();
 
@@ -175,35 +195,30 @@ export default function App() {
 
     // Look up the selected user for wallet + network truth
     const u = users.find(x => x.user_id === payUserId);
-    if (!u) {
-      // fallback to manual inputs if somehow missing
-      return alert("Selected user not found.");
-    }
-    if (!u.wallet) {
-      return alert("Selected user has no wallet address.");
-    }
+    if (!u) return alert("Selected user not found.");
+    if (!u.wallet) return alert("Selected user has no wallet address.");
+
     const userNetwork = (u.network || network || "ERC20").toUpperCase(); // "ERC20" | "TRC20"
+    const cfg = STABLECOIN[userNetwork];
+    if (!cfg) return alert(`Unsupported network: ${userNetwork}`);
 
     let finalTxHash = (txHash || "").trim();
 
     try {
-      // If no tx hash provided, send on-chain via wallet
+      // If no tx hash provided, send on-chain USDT
       if (!finalTxHash) {
-        // For MVP we send native coin on the user's chain
-        const chain = userNetwork === "TRC20" ? "tron" : "evm";
-        // If you want token payouts (USDT), switch token + add tokenAddress/decimals
-        // const token = userNetwork === "TRC20" ? "trc20" : "erc20";
-        // const tokenAddress = userNetwork === "TRC20"
-        //   ? "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8" // USDT-TRC20 mainnet (example)
-        //   : "0xdAC17F958D2ee523a2206206994597C13D831ec7"; // USDT-ERC20 mainnet (example)
-        // const decimals = 6;
+        // Enforce Ethereum mainnet for ERC20 payouts (optional but recommended)
+        if (userNetwork === "ERC20" && cfg.chainIdHex) {
+          await evmRequireChain(cfg.chainIdHex);
+        }
 
         finalTxHash = await sendPayout({
-          chain,
-          token: "native",
+          chain: cfg.chain,               // "evm" | "tron"
+          token: cfg.token,               // "erc20" | "trc20"
+          tokenAddress: cfg.address,      // USDT contract by chain
+          decimals: cfg.decimals,         // 6 for USDT
           to: u.wallet,
-          amount: String(amt),
-          // tokenAddress, decimals, // if using tokens
+          amount: String(amt),            // e.g., "25" USDT
         });
       }
 
@@ -215,7 +230,7 @@ export default function App() {
         status: "success"
       });
 
-      alert(`Paid ${amt} to ${u.user_id}\nTx: ${finalTxHash || `(logged #${res?.tx_id ?? "?"})`}`);
+      alert(`Paid ${amt} USDT to ${u.user_id}\nTx: ${finalTxHash || `(logged #${res?.tx_id ?? "?"})`}`);
 
       // Refresh totals
       const a = await listApproved();
@@ -470,6 +485,7 @@ export default function App() {
             {users.map(u => <option key={u.user_id} value={u.user_id}>{u.user_id} — {u.nick}</option>)}
           </select>
           <input className="border rounded p-2" value={amount} onChange={e => setAmount(e.target.value)} />
+          {/* Keep this manual network selector as fallback; actual send uses the user's saved network */}
           <select className="border rounded p-2" value={network} onChange={e => setNetwork(e.target.value)}>
             <option>ERC20</option>
             <option>TRC20</option>
@@ -482,8 +498,8 @@ export default function App() {
           </div>
         </form>
         <p className="text-xs text-gray-500 mt-2">
-          Tip: leave “Tx Hash” blank to send via the connected wallet (native coin on selected chain).
-          Provide a Tx Hash to skip sending and only log the payout.
+          Stablecoin mode: sends <strong>USDT</strong> on the user’s network (ERC20 → Ethereum mainnet, TRC20 → TRON mainnet).<br />
+          Leave “Tx Hash” blank to send via the connected wallet. Provide a Tx Hash to skip sending and only log the payout.
         </p>
       </section>
     </div>
