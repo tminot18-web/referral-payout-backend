@@ -51,6 +51,16 @@ export default function App() {
   const [network, setNetwork] = useState("ERC20"); // fallback if user lookup fails
   const [txHash, setTxHash] = useState("");
 
+  // NEW: Payout-specific search
+  const [paySearch, setPaySearch] = useState("");
+  const payoutOptions = useMemo(() => {
+    const q = paySearch.trim().toLowerCase();
+    if (!q) return users;
+    return users.filter(u =>
+      `${u.user_id} ${u.nick} ${u.email} ${u.wallet}`.toLowerCase().includes(q)
+    );
+  }, [users, paySearch]);
+
   // Wallet state
   const [mmAvailable, setMmAvailable] = useState(false);
   const [tlAvailable, setTlAvailable] = useState(false);
@@ -268,7 +278,7 @@ export default function App() {
     }
   }
 
-  // Filters
+  // Users table filter (existing)
   const filteredUsers = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return users;
@@ -480,24 +490,61 @@ export default function App() {
       <section className="border rounded p-4">
         <h2 className="font-semibold text-lg mb-2">Payout</h2>
         <form onSubmit={onSendPayout} className="grid md:grid-cols-4 gap-3 items-center">
-          <select className="border rounded p-2" value={payUserId} onChange={e => setPayUserId(e.target.value)}>
-            {users.map(u => <option key={u.user_id} value={u.user_id}>{u.user_id} — {u.nick}</option>)}
+          {/* NEW: search users by name/email/id/wallet for the payout dropdown */}
+          <input
+            className="border rounded p-2"
+            placeholder="Search user…"
+            value={paySearch}
+            onChange={(e) => setPaySearch(e.target.value)}
+            aria-label="Search payout user"
+          />
+
+          {/* Filtered select driven by paySearch */}
+          <select
+            className="border rounded p-2"
+            value={payUserId}
+            onChange={e => setPayUserId(e.target.value)}
+          >
+            {payoutOptions.map(u => (
+              <option key={u.user_id} value={u.user_id}>
+                {u.user_id} — {u.nick || u.email || (u.wallet ? `${u.wallet.slice(0,6)}…${u.wallet.slice(-4)}` : "")}
+              </option>
+            ))}
+            {payoutOptions.length === 0 && (
+              <option value="" disabled>No matches</option>
+            )}
           </select>
-          <input className="border rounded p-2" value={amount} onChange={e => setAmount(e.target.value)} />
+
+          <input
+            className="border rounded p-2"
+            value={amount}
+            onChange={e => setAmount(e.target.value)}
+            placeholder="Amount (USDT)"
+          />
+
           {/* Manual network selector as fallback; actual send uses the user's saved network */}
           <select className="border rounded p-2" value={network} onChange={e => setNetwork(e.target.value)}>
             <option>ERC20</option>
             <option>TRC20</option>
           </select>
-          <input className="border rounded p-2" placeholder="Tx Hash (optional)" value={txHash} onChange={e => setTxHash(e.target.value)} />
+
+          <input
+            className="border rounded p-2 md:col-span-3"
+            placeholder="Tx Hash (optional)"
+            value={txHash}
+            onChange={e => setTxHash(e.target.value)}
+          />
+
           <div className="md:col-span-4">
             <button className="w-full py-3 rounded bg-purple-600 text-white cursor-pointer hover:bg-purple-700">
               Send Payout
             </button>
           </div>
         </form>
+
         <p className="text-xs text-gray-500 mt-2">
           Stablecoin mode: sends <strong>USDT</strong> on the user’s network (ERC20 → Ethereum mainnet, TRC20 → TRON mainnet).<br />
+          Tip: <strong>Install, unlock, and pin MetaMask/TronLink</strong> so the top-right connect buttons detect them instantly.
           Leave “Tx Hash” blank to send via the connected wallet. Provide a Tx Hash to skip sending and only log the payout.
         </p>
       </section>
