@@ -51,7 +51,7 @@ export default function App() {
   const [network, setNetwork] = useState("ERC20"); // fallback if user lookup fails
   const [txHash, setTxHash] = useState("");
 
-  // NEW: Payout-specific search
+  // NEW: Payout-specific search (filters the dropdown)
   const [paySearch, setPaySearch] = useState("");
   const payoutOptions = useMemo(() => {
     const q = paySearch.trim().toLowerCase();
