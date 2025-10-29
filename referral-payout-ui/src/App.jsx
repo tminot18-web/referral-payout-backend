@@ -15,6 +15,20 @@ import {
 
 const cx = (...a) => a.filter(Boolean).join(" ");
 
+// ──────────────────────────────────────────────────────────────────
+// Helpers: basic address validation (lightweight, UI-only gates)
+// ──────────────────────────────────────────────────────────────────
+const isEthAddress = (a) => /^0x[a-fA-F0-9]{40}$/.test((a || "").trim());
+const isTronAddress = (a) => {
+  const s = (a || "").trim();
+  try {
+    // Prefer TronWeb's validator when injected
+    if (window.tronWeb?.isAddress) return window.tronWeb.isAddress(s);
+  } catch (_) { /* ignore */ }
+  // Fallback base58 pattern (doesn't catch checksums)
+  return /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(s);
+};
+
 // Hard-coded stablecoin map (USDT) by chain family
 const STABLECOIN = {
   ERC20: {
@@ -22,7 +36,7 @@ const STABLECOIN = {
     token: "erc20",
     address: "0xdAC17F958D2ee523a2206206994597C13D831ec7", // USDT (Ethereum mainnet)
     decimals: 6,
-    chainIdHex: "0x1", // Enforce Ethereum mainnet
+    chainIdHex: "0x1",
   },
   TRC20: {
     chain: "tron",
@@ -51,7 +65,7 @@ export default function App() {
   const [network, setNetwork] = useState("ERC20"); // fallback if user lookup fails
   const [txHash, setTxHash] = useState("");
 
-  // NEW: Payout-specific search (filters the dropdown)
+  // Payout-specific search (filters the dropdown)
   const [paySearch, setPaySearch] = useState("");
   const payoutOptions = useMemo(() => {
     const q = paySearch.trim().toLowerCase();
@@ -172,11 +186,36 @@ export default function App() {
   async function onCreateUser(e) {
     e.preventDefault();
     try {
-      await createUser(form);
-      setForm({ user_id: "", nick: "", email: "", wallet: "", network: "ERC20" });
+      // sanitize inputs
+      const cleaned = {
+        ...form,
+        user_id: (form.user_id || "").trim(),
+        nick: (form.nick || "").trim(),
+        email: (form.email || "").trim(),
+        wallet: (form.wallet || "").trim(),
+      };
+
+      // basic address validation for UX
+      if (cleaned.network === "ERC20" && cleaned.wallet && !isEthAddress(cleaned.wallet)) {
+        return alert("Please enter a valid Ethereum address (0x...)");
+      }
+      if (cleaned.network === "TRC20" && cleaned.wallet && !isTronAddress(cleaned.wallet)) {
+        return alert("Please enter a valid Tron address (starts with T...)");
+      }
+
+      await createUser(cleaned);
+
+      // Refresh lists
       const [p, a] = await Promise.all([listPending(), listApproved()]);
       setPending(p || []);
       setUsers(a || []);
+
+      // Auto-select the new user in the Payout section (no reload needed)
+      setPayUserId(cleaned.user_id);
+      setPaySearch(cleaned.user_id);
+
+      // Reset form
+      setForm({ user_id: "", nick: "", email: "", wallet: "", network: "ERC20" });
     } catch (err) {
       alert(err.message || "Create failed");
     }
@@ -202,12 +241,20 @@ export default function App() {
       return alert("Enter a valid user and amount.");
     }
 
-    // Look up the selected user for wallet + network truth
+    // Resolve selected user & sanitize wallet
     const u = users.find(x => x.user_id === payUserId);
     if (!u) return alert("Selected user not found.");
-    if (!u.wallet) return alert("Selected user has no wallet address.");
+    const toAddr = (u.wallet || "").trim();
+    if (!toAddr) return alert("Selected user has no wallet address.");
 
     const userNetwork = (u.network || network || "ERC20").toUpperCase(); // "ERC20" | "TRC20"
+    if (userNetwork === "ERC20" && !isEthAddress(toAddr)) {
+      return alert("Invalid Ethereum address for this user.");
+    }
+    if (userNetwork === "TRC20" && !isTronAddress(toAddr)) {
+      return alert("Invalid Tron address for this user.");
+    }
+
     const cfg = STABLECOIN[userNetwork];
     if (!cfg) return alert(`Unsupported network: ${userNetwork}`);
 
@@ -216,9 +263,14 @@ export default function App() {
     try {
       // If no tx hash provided, send on-chain USDT
       if (!finalTxHash) {
-        // Enforce Ethereum mainnet for ERC20 payouts (recommended)
-        if (userNetwork === "ERC20" && cfg.chainIdHex) {
-          await evmRequireChain(cfg.chainIdHex);
+        // Re-ensure wallet/session right before tx
+        if (userNetwork === "ERC20") {
+          await evmRequireChain(cfg.chainIdHex); // enforce mainnet
+          await window.ethereum?.request?.({ method: "eth_requestAccounts" });
+        } else if (userNetwork === "TRC20") {
+          if (!window.tronWeb?.defaultAddress?.base58) {
+            await window.tronLink?.request?.({ method: "tron_requestAccounts" });
+          }
         }
 
         finalTxHash = await sendPayout({
@@ -226,7 +278,7 @@ export default function App() {
           token: cfg.token,               // "erc20" | "trc20"
           tokenAddress: cfg.address,      // USDT contract by chain
           decimals: cfg.decimals,         // USDT uses 6
-          to: u.wallet,
+          to: toAddr,
           amount: String(amt),            // e.g., "5" USDT
         });
       }
@@ -234,7 +286,7 @@ export default function App() {
       const res = await pay({
         user_id: u.user_id,
         amount: amt,
-        network: userNetwork,     // "ERC20" | "TRC20"
+        network: userNetwork,
         tx_hash: finalTxHash || undefined,
         status: "success"
       });
@@ -247,6 +299,11 @@ export default function App() {
       setTxHash("");
     } catch (err) {
       console.error(err);
+      const msg = (err?.message || "").toLowerCase();
+      const code = err?.code;
+      if (code === 4001 || msg.includes("user denied") || msg.includes("rejected by the user")) {
+        return alert("Transaction canceled.");
+      }
       alert(err.message || "Payout failed");
     }
   }
@@ -490,7 +547,7 @@ export default function App() {
       <section className="border rounded p-4">
         <h2 className="font-semibold text-lg mb-2">Payout</h2>
         <form onSubmit={onSendPayout} className="grid md:grid-cols-4 gap-3 items-center">
-          {/* NEW: search users by name/email/id/wallet for the payout dropdown */}
+          {/* Search users for the payout dropdown */}
           <input
             className="border rounded p-2"
             placeholder="Search user…"
